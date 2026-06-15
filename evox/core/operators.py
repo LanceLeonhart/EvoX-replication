@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Dict, List
 from ..llm.solution_prompts import build_solution_prompt
 
 if TYPE_CHECKING:  # avoid import cycle at runtime
-    from ..llm.client import LLMClient, SolutionRequest
+    from ..llm.client import LLMClient, SolutionRequest, SolutionResponse
 
 
 @dataclass
@@ -29,10 +29,13 @@ class Operator:
     name: str
     description: str
 
-    def apply(self, request: "SolutionRequest", client: "LLMClient") -> Any:
+    def apply(self, request: "SolutionRequest", client: "LLMClient") -> "SolutionResponse":
+        """Build the solution prompt, ask the client to realise the edit, and
+        return the full response (candidate + generation metadata)."""
         prompt = build_solution_prompt(request)
         response = client.generate_solution(request, prompt)
-        return response.candidate
+        response.prompt = prompt
+        return response
 
 
 DEFAULT_OPERATORS = {

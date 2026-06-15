@@ -38,6 +38,28 @@ pytest -q
 If you are not installing the package, the scripts add the repo root to
 `sys.path` automatically, so the commands above work as-is.
 
+## Real inner-loop generation (OpenAI, V1)
+
+The inner loop can generate candidates with a real model via the OpenAI
+**Responses API** (default `gpt-5-mini`). Strategy proposal is still
+mock/static in V1.
+
+```bash
+pip install 'openai>=1.40'         # or: pip install -e ".[openai]"
+export OPENAI_API_KEY=sk-...
+python scripts/run_task.py --config configs/blackbox_openai.yaml
+```
+
+- Select the backend with `llm.mode: mock | openai` in the config. `mock` is the
+  default and is what tests and smoke runs use.
+- Low-cost defaults: `reasoning_effort: minimal`, `verbosity: low`, configurable
+  `max_output_tokens` (see `configs/blackbox_openai.yaml`).
+- If `OPENAI_API_KEY` is missing, an `openai` run **fails clearly and does not
+  fall back to mock**.
+- Each generation logs model, token usage, the raw model output, a prompt
+  preview, and any parse error (under `generation` in the iteration events). A
+  candidate that fails to parse is marked invalid and the run continues.
+
 ## Layout
 
 ```
@@ -64,12 +86,14 @@ J     = delta * log(1 + s_start) / sqrt(W)
 stagnant if delta <= tau   ->   propose a new strategy, validate, switch
 ```
 
-## What's mocked in V0
+## What's real vs. mocked (V1)
 
-- **Solution generation** is a deterministic numeric mutation of the candidate
-  vector (no LLM). The operator vocabulary and decision flow are identical to a
-  real run.
-- **Strategy proposal** picks a different valid strategy from a small catalogue.
+- **Solution generation** — real OpenAI backend available (`llm.mode: openai`,
+  default `gpt-5-mini`); a deterministic mock backend (`llm.mode: mock`, the
+  default) is used for tests and smoke runs. Same operators and decision flow
+  either way.
+- **Strategy proposal** — still mock/static: picks a different valid strategy
+  from a small catalogue. No real strategy-generation API call yet.
 - **One task only** (`toy_blackbox`); the `Task` interface + registry are ready
   for the rest.
 

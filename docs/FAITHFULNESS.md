@@ -61,11 +61,12 @@ interface, `evox/llm/client.py::LLMClient`:
 - `generate_solution(request, prompt)` — inner loop candidate generation.
 - `propose_strategy(request, prompt)` — outer loop strategy proposal.
 
-`MockLLMClient` implements both deterministically and offline. The prompt
-builders (`evox/llm/solution_prompts.py`, `evox/llm/strategy_prompts.py`) and
-parsers (`evox/llm/parsers.py`) are the seam a real client plugs into — they are
-built/tested in V0 even though the mock client returns structured objects
-directly. See `docs/ROADMAP.md`.
+`MockLLMClient` implements both deterministically and offline. As of V1,
+`OpenAIClient` implements real inner-loop `generate_solution` via the OpenAI
+Responses API (default `gpt-5-mini`), reusing `solution_prompts.py` and
+`parsers.py`; its `propose_strategy` still delegates to the mock (no real
+strategy-generation call yet). The backend is selected by `llm.mode`
+(`mock` | `openai`) in `eval/runner.py::_make_client`. See `docs/ROADMAP.md`.
 
 ## Honest simplifications in V0
 

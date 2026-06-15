@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import abc
 import math
+import os
 import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.strategy import Strategy
 from ..logging.usage import UsageTracker
+from .parsers import parse_solution_vector
 
 
 # ── request / response containers ─────────────────────────────────────────
@@ -46,6 +48,9 @@ class SolutionResponse:
     raw_text: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    model: str = "mock"
+    parse_error: Optional[str] = None
+    prompt: str = ""
 
 
 @dataclass
@@ -201,3 +206,120 @@ class MockLLMClient(LLMClient):
             prompt_tokens=ptoks,
             completion_tokens=ctoks,
         )
+
+
+# ── OpenAI client (real inner-loop generation) ─────────────────────────────
+def _extract_output_text(response: Any) -> str:
+    """Best-effort extraction of text from a Responses API result."""
+    txt = getattr(response, "output_text", None)
+    if txt:
+        return txt
+    chunks: List[str] = []
+    for item in getattr(response, "output", None) or []:
+        for part in getattr(item, "content", None) or []:
+            t = getattr(part, "text", None)
+            if t:
+                chunks.append(t)
+    return "".join(chunks)
+
+
+class OpenAIClient(LLMClient):
+    """Real inner-loop candidate generation via the OpenAI Responses API.
+
+    Only ``generate_solution`` (G_sol) is real. Strategy proposal stays mock /
+    static in V1 and is delegated to an internal ``MockLLMClient`` — no real
+    strategy-generation API call is made.
+
+    The OpenAI SDK is imported lazily and the API key is checked *before* the
+    import, so a missing key fails with a clear message even when the SDK is not
+    installed (e.g. in the test environment).
+    """
+
+    def __init__(
+        self,
+        model: str = "gpt-5-mini",
+        reasoning_effort: str = "minimal",
+        verbosity: Optional[str] = "low",
+        max_output_tokens: int = 512,
+        usage: Optional[UsageTracker] = None,
+        catalog: Optional[List[Strategy]] = None,
+        api_key: Optional[str] = None,
+        client: Any = None,
+    ) -> None:
+        self.model = model
+        self.reasoning_effort = reasoning_effort
+        self.verbosity = verbosity
+        self.max_output_tokens = int(max_output_tokens)
+        self.usage = usage or UsageTracker()
+        # strategy proposal remains mock/static in V1
+        self._strategy_backend = MockLLMClient(usage=self.usage, catalog=catalog)
+
+        if client is not None:
+            self._client = client
+            return
+
+        key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is not set but llm.mode='openai' was requested. "
+                "Export OPENAI_API_KEY or use llm.mode='mock'. "
+                "(No silent fallback to mock.)"
+            )
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover - depends on env
+            raise RuntimeError(
+                "The 'openai' package is required for llm.mode='openai'. "
+                "Install it with: pip install 'evox-replication[openai]' "
+                "(or: pip install openai)."
+            ) from exc
+        self._client = OpenAI(api_key=key)
+
+    # solution generation -------------------------------------------------
+    def generate_solution(self, request: SolutionRequest, prompt: str) -> SolutionResponse:
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "input": prompt,
+            "max_output_tokens": self.max_output_tokens,
+        }
+        if self.reasoning_effort:
+            kwargs["reasoning"] = {"effort": self.reasoning_effort}
+        if self.verbosity:
+            kwargs["text"] = {"verbosity": self.verbosity}
+
+        # API/transport errors are intentionally NOT swallowed: a bad key or
+        # quota problem should fail loudly rather than silently producing a run
+        # of all-invalid candidates.
+        response = self._client.responses.create(**kwargs)
+        raw = _extract_output_text(response)
+
+        usage = getattr(response, "usage", None)
+        ptoks = int(getattr(usage, "input_tokens", 0) or 0)
+        ctoks = int(getattr(usage, "output_tokens", 0) or 0)
+        self.usage.record("generate_solution", prompt_tokens=ptoks, completion_tokens=ctoks)
+
+        # Parse failures must NOT crash the run: mark invalid, keep the raw text
+        # and the error reason so the engine can log them and continue.
+        candidate, parse_error = self._parse_candidate(request, raw)
+        return SolutionResponse(
+            candidate=candidate,
+            raw_text=raw,
+            prompt_tokens=ptoks,
+            completion_tokens=ctoks,
+            model=self.model,
+            parse_error=parse_error,
+        )
+
+    @staticmethod
+    def _parse_candidate(request: SolutionRequest, raw: str):
+        schema = request.candidate_schema or {}
+        try:
+            if schema.get("kind") == "vector":
+                return parse_solution_vector(raw), None
+            return raw, None
+        except Exception as exc:  # parse failure -> invalid candidate
+            return None, f"{type(exc).__name__}: {exc}"
+
+    # strategy proposal (still mock/static in V1) -------------------------
+    def propose_strategy(self, request: StrategyRequest, prompt: str) -> StrategyResponse:
+        return self._strategy_backend.propose_strategy(request, prompt)

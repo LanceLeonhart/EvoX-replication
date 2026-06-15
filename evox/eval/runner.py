@@ -17,7 +17,7 @@ import yaml
 
 from ..core.engine import Engine
 from ..core.strategy import Strategy, validate_strategy
-from ..llm.client import MockLLMClient
+from ..llm.client import LLMClient, MockLLMClient, OpenAIClient
 from ..logging.event_log import EventLog
 from ..logging.usage import UsageTracker
 from ..tasks.registry import create_task
@@ -38,13 +38,22 @@ def load_config(path: str) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def _make_client(config: Dict[str, Any], usage: UsageTracker) -> MockLLMClient:
-    mode = config.get("llm", {}).get("mode", "mock")
-    if mode != "mock":
-        raise NotImplementedError(
-            f"llm.mode={mode!r} not supported in V0; only 'mock' is available"
+def _make_client(config: Dict[str, Any], usage: UsageTracker) -> LLMClient:
+    llm = config.get("llm", {}) or {}
+    mode = llm.get("mode", "mock")
+    if mode == "mock":
+        return MockLLMClient(usage=usage)
+    if mode == "openai":
+        # Real inner-loop generation. A missing OPENAI_API_KEY raises inside
+        # OpenAIClient — no silent fallback to mock.
+        return OpenAIClient(
+            model=llm.get("model", "gpt-5-mini"),
+            reasoning_effort=llm.get("reasoning_effort", "minimal"),
+            verbosity=llm.get("verbosity", "low"),
+            max_output_tokens=int(llm.get("max_output_tokens", 512)),
+            usage=usage,
         )
-    return MockLLMClient(usage=usage)
+    raise ValueError(f"unknown llm.mode={mode!r}; expected 'mock' or 'openai'")
 
 
 def _run_dir(config: Dict[str, Any], task_name: str) -> str:

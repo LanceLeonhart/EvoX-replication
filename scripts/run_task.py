@@ -7,6 +7,7 @@
 import _bootstrap  # noqa: F401
 
 import argparse
+import sys
 
 from evox.eval.runner import run_config_file
 
@@ -16,7 +17,12 @@ def main() -> None:
     parser.add_argument("--config", required=True, help="path to a task YAML config")
     args = parser.parse_args()
 
-    result = run_config_file(args.config)
+    try:
+        result = run_config_file(args.config)
+    except (RuntimeError, ValueError) as e:
+        # e.g. missing OPENAI_API_KEY for llm.mode=openai — fail clearly, no fallback
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
     s = result.summary
     print("== run complete ==")
     print(f"config                : {args.config}")

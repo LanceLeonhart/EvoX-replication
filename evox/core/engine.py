@@ -179,9 +179,16 @@ class Engine:
             seed=self._gen_seed(iteration),
         )
         operator = self.registry.get(operator_name)
-        candidate = operator.apply(request, self.client)
+        response = operator.apply(request, self.client)
+        candidate = response.candidate
 
         result = self.task.evaluate(candidate)
+        # a parse failure (candidate is None / unparseable) is surfaced as an
+        # invalid node rather than crashing the run
+        feedback = result.feedback
+        if response.parse_error:
+            feedback = (feedback + " | " if feedback else "") + f"generation: {response.parse_error}"
+
         node = Node(
             id=self.db.new_id(),
             parent_id=parent.id,
@@ -193,7 +200,7 @@ class Engine:
             fitness=self._fitness(result.score),
             valid=result.valid,
             inspiration_ids=[n.id for n in inspirations],
-            feedback=result.feedback,
+            feedback=feedback,
             metrics=result.metrics,
         )
         self.db.add(node)
@@ -210,8 +217,26 @@ class Engine:
             valid=node.valid,
             best_fitness=self.db.best_fitness(),
             population_size=self.db.size,
+            generation=self._generation_meta(response),
         )
         return node
+
+    @staticmethod
+    def _generation_meta(response, cap: int = 2000) -> dict:
+        """Debugging metadata for one generation call: model, token usage, the
+        raw model output, a prompt preview, and any parse error."""
+        def _trunc(text: str) -> str:
+            text = text or ""
+            return text if len(text) <= cap else text[:cap] + f"...<+{len(text) - cap} chars>"
+
+        return {
+            "model": response.model,
+            "prompt_tokens": response.prompt_tokens,
+            "completion_tokens": response.completion_tokens,
+            "parse_error": response.parse_error,
+            "raw_output": _trunc(response.raw_text),
+            "prompt_preview": _trunc(response.prompt),
+        }
 
     # ── outer loop ──────────────────────────────────────────────────────────
     def _close_window(
