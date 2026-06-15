@@ -51,6 +51,32 @@ class StrategyHistory:
     def tried_signatures(self) -> List[Tuple]:
         return [e.strategy.signature() for e in self._entries]
 
+    def summary(self) -> List[Dict[str, Any]]:
+        """Compact, JSON-serialisable view of H = {(S, phi, J)} for prompting.
+
+        Each item carries the strategy (id/name + full compact dict), the score
+        ``J`` and improvement ``delta`` it earned, the window bounds, and the
+        population descriptor observed at window close (the state ``phi(D)``
+        *after* the window). This is what lets a strategy proposer reason about
+        which strategies worked and under what population state.
+        """
+        items: List[Dict[str, Any]] = []
+        for e in self._entries:
+            items.append(
+                {
+                    "window_index": e.window_index,
+                    "strategy_id": e.strategy.id,
+                    "strategy_name": e.strategy.name,
+                    "strategy": e.strategy.to_dict(),
+                    "J": e.J,
+                    "delta": e.delta,
+                    "s_start": e.s_start,
+                    "s_end": e.s_end,
+                    "descriptor": e.descriptor,
+                }
+            )
+        return items
+
     def best_by_J(self) -> Optional[HistoryEntry]:
         if not self._entries:
             return None

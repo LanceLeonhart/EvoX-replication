@@ -54,6 +54,7 @@ class StrategyRequest:
     descriptor: Dict[str, Any]
     tried_signatures: List[Tuple]
     seed: int
+    history_summary: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

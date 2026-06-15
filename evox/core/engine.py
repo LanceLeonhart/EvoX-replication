@@ -102,6 +102,13 @@ class Engine:
                 window_start_best = self._close_window(window_index, window_start_best)
                 window_index += 1
 
+        # close a trailing partial window so the last few iterations are still
+        # scored and can still trigger a strategy switch
+        leftover = self.T % self.W
+        if leftover:
+            self._close_window(window_index, window_start_best, window_size=leftover)
+            window_index += 1
+
         best = self.db.best()
         summary = RunSummary(
             task=self.task.name,
@@ -207,11 +214,17 @@ class Engine:
         return node
 
     # ── outer loop ──────────────────────────────────────────────────────────
-    def _close_window(self, window_index: int, window_start_best: float) -> float:
+    def _close_window(
+        self,
+        window_index: int,
+        window_start_best: float,
+        window_size: Optional[int] = None,
+    ) -> float:
+        w = self.W if window_size is None else int(window_size)
         s_start = window_start_best
         s_end = self.db.best_fitness()
         delta = window_delta(s_start, s_end)
-        J = strategy_score(delta, s_start, self.W)
+        J = strategy_score(delta, s_start, w)
 
         descriptor = PopulationDescriptor.build(self.db)
         self.history.add(
@@ -229,6 +242,7 @@ class Engine:
             "window_summary",
             window_index=window_index,
             strategy_id=self.current.id,
+            window_size=w,
             s_start=s_start,
             s_end=s_end,
             delta=delta,
@@ -250,6 +264,7 @@ class Engine:
             descriptor=descriptor.to_dict(),
             tried_signatures=self.history.tried_signatures(),
             seed=self._strategy_seed(window_index),
+            history_summary=self.history.summary(),
         )
         prompt = build_strategy_prompt(request)
         response = self.client.propose_strategy(request, prompt)

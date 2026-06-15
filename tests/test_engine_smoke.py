@@ -77,6 +77,27 @@ def test_population_never_reset_across_switches():
         assert sw["population_size_after"] > 0
 
 
+def test_partial_final_window_is_closed():
+    # T=10, W=3 -> windows close at iters 3,6,9 and a partial window (1 iter)
+    # is closed at the end => 4 windows total, the last sized 1.
+    eng = _engine(tau=-1.0, T=10, W=3)
+    summary = eng.run()
+    assert summary.num_windows == 4
+    windows = eng.log.of_type("window_summary")
+    assert len(windows) == 4
+    assert windows[-1]["window_size"] == 10 % 3  # == 1
+    # full windows report the configured size
+    assert windows[0]["window_size"] == 3
+
+
+def test_exact_multiple_has_no_partial_window():
+    eng = _engine(tau=-1.0, T=12, W=3)
+    summary = eng.run()
+    assert summary.num_windows == 4  # 12/3, no trailing partial
+    for w in eng.log.of_type("window_summary"):
+        assert w["window_size"] == 3
+
+
 def test_progress_formulas():
     assert window_delta(0.2, 0.5) == 0.3
     expected = 0.3 * math.log(1 + 0.2) / math.sqrt(4)
