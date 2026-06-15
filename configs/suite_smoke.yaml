@@ -1,0 +1,10 @@
+# A minimal evaluation suite. V0 runs a single task through the suite interface;
+# adding more entries here is how multi-task evaluation will scale (see ROADMAP).
+suite:
+  name: suite_smoke
+  output_dir: runs/suite_smoke
+
+runs:
+  - config: configs/smoke.yaml
+  # Future tasks register in the task registry and are appended here, e.g.:
+  # - config: configs/blackbox_evox_mock.yaml

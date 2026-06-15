@@ -1,0 +1,36 @@
+# Baseline: a single STATIC strategy, never switched (tau set so no window ever
+# counts as stagnant). Useful as a control against the adaptive EvoX run.
+name: blackbox_static_random
+
+task:
+  name: toy_blackbox
+  params:
+    dim: 6
+    low: -5.12
+    high: 5.12
+    target: 0.0
+
+engine:
+  budget_T: 24
+  window_W: 4
+  tau: -1.0          # delta is always > -1, so stagnation never triggers
+  seed: 42
+
+strategy:
+  id: explore_global
+  name: Explore (free-form restarts, random parents)
+  parent_selection: random
+  operator_weights:
+    local_refine: 0.2
+    structural_variation: 0.3
+    free_form: 0.5
+  num_inspirations: 0
+  inspiration_selection: random
+  exploration: 0.9
+  notes: Static random-ish exploration baseline; strategy is never adapted.
+
+llm:
+  mode: mock
+
+output:
+  dir: runs

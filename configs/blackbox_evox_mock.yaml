@@ -1,0 +1,37 @@
+# Full EvoX two-level run with mock generation. Starts exploitative; when a
+# window stagnates the outer loop proposes and validates a different strategy
+# (recombine / explore) without resetting the population.
+name: blackbox_evox_mock
+
+task:
+  name: toy_blackbox
+  params:
+    dim: 6
+    low: -5.12
+    high: 5.12
+    target: 0.0
+
+engine:
+  budget_T: 24
+  window_W: 4
+  tau: 0.05          # windows improving <= 0.05 in best-fitness count as stagnant
+  seed: 7
+
+strategy:
+  id: exploit_local
+  name: Exploit (local refine, best parent)
+  parent_selection: best
+  operator_weights:
+    local_refine: 0.85
+    structural_variation: 0.12
+    free_form: 0.03
+  num_inspirations: 1
+  inspiration_selection: best
+  exploration: 0.15
+  notes: Tight exploitation around the incumbent best.
+
+llm:
+  mode: mock
+
+output:
+  dir: runs
