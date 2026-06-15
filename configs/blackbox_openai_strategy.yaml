@@ -1,0 +1,45 @@
+# Full real EvoX: real inner-loop solution generation AND real outer-loop
+# strategy generation, both via the OpenAI Responses API (gpt-5-mini).
+# Requires OPENAI_API_KEY and `pip install openai`.
+# On stagnation the model proposes a new Strategy JSON from H and phi(D); it is
+# parsed + validated, with retries and a mock fallback on repeated failure.
+name: blackbox_openai_strategy
+
+task:
+  name: toy_blackbox
+  params:
+    dim: 6
+    low: -5.12
+    high: 5.12
+    target: 0.0
+
+engine:
+  budget_T: 12       # keep small: each inner iteration is one API call
+  window_W: 4
+  tau: 0.05          # windows improving <= 0.05 stagnate and trigger G_str
+  seed: 7
+
+strategy:
+  id: exploit_local
+  name: Exploit (local refine, best parent)
+  parent_selection: best
+  operator_weights:
+    local_refine: 0.85
+    structural_variation: 0.12
+    free_form: 0.03
+  num_inspirations: 1
+  inspiration_selection: best
+  exploration: 0.15
+  notes: Tight exploitation around the incumbent best.
+
+llm:
+  solution_mode: openai
+  strategy_mode: openai
+  model: gpt-5-mini
+  reasoning_effort: minimal
+  verbosity: low
+  max_output_tokens: 512
+  strategy_retries: 2   # retries before falling back to the mock proposer
+
+output:
+  dir: runs

@@ -293,7 +293,9 @@ class Engine:
         )
         prompt = build_strategy_prompt(request)
         response = self.client.propose_strategy(request, prompt)
+        response.prompt = prompt
         proposed = response.strategy
+        gen_meta = self._strategy_gen_meta(response)
 
         ok, reasons = validate_strategy(proposed, tuple(self.registry.names()))
         is_different = proposed.signature() != self.current.signature()
@@ -315,6 +317,7 @@ class Engine:
                 strategy=proposed.to_dict(),
                 population_size_before=pop_before,
                 population_size_after=self.db.size,  # unchanged: D is never reset
+                strategy_generation=gen_meta,
             )
         else:
             self.log.log(
@@ -326,4 +329,26 @@ class Engine:
                 valid=ok,
                 different=is_different,
                 reasons=reasons,
+                strategy_generation=gen_meta,
             )
+
+    @staticmethod
+    def _strategy_gen_meta(response, cap: int = 2000) -> dict:
+        """Debugging metadata for one strategy-generation call: model, token
+        usage, attempts/fallback/acceptance, raw output, prompt preview, and any
+        parse/validation errors."""
+        def _trunc(text: str) -> str:
+            text = text or ""
+            return text if len(text) <= cap else text[:cap] + f"...<+{len(text) - cap} chars>"
+
+        return {
+            "model": response.model,
+            "prompt_tokens": response.prompt_tokens,
+            "completion_tokens": response.completion_tokens,
+            "attempts": response.attempts,
+            "used_fallback": response.used_fallback,
+            "errors": response.errors,
+            "proposed_strategy": response.strategy.id,
+            "raw_output": _trunc(response.raw_text),
+            "prompt_preview": _trunc(response.prompt),
+        }

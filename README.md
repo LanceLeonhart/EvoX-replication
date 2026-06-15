@@ -38,27 +38,46 @@ pytest -q
 If you are not installing the package, the scripts add the repo root to
 `sys.path` automatically, so the commands above work as-is.
 
-## Real inner-loop generation (OpenAI, V1)
+## Real generation (OpenAI Responses API, default `gpt-5-mini`)
 
-The inner loop can generate candidates with a real model via the OpenAI
-**Responses API** (default `gpt-5-mini`). Strategy proposal is still
-mock/static in V1.
+Solution generation (inner loop, `G_sol`) and strategy generation (outer loop,
+`G_str`) each have an independently selectable backend:
+
+```yaml
+llm:
+  solution_mode: mock | openai   # inner-loop candidate generation
+  strategy_mode:  mock | openai   # outer-loop strategy proposal (on stagnation)
+  model: gpt-5-mini
+  reasoning_effort: minimal       # low-cost default
+  verbosity: low                  # concise output
+  max_output_tokens: 512
+  strategy_retries: 1             # retries before falling back to the mock proposer
+```
+
+Three useful combinations: mock/mock (default, offline), openai/mock
+(`configs/blackbox_openai.yaml`), openai/openai (`configs/blackbox_openai_strategy.yaml`).
 
 ```bash
 pip install 'openai>=1.40'         # or: pip install -e ".[openai]"
 export OPENAI_API_KEY=sk-...
-python scripts/run_task.py --config configs/blackbox_openai.yaml
+python scripts/run_task.py --config configs/blackbox_openai_strategy.yaml
 ```
 
-- Select the backend with `llm.mode: mock | openai` in the config. `mock` is the
-  default and is what tests and smoke runs use.
-- Low-cost defaults: `reasoning_effort: minimal`, `verbosity: low`, configurable
-  `max_output_tokens` (see `configs/blackbox_openai.yaml`).
-- If `OPENAI_API_KEY` is missing, an `openai` run **fails clearly and does not
+- `mock` is the default (and what tests / smoke runs use). The legacy `llm.mode`
+  key still works: it sets `solution_mode`, leaving strategy mock unless you opt
+  in with `strategy_mode: openai`.
+- If `OPENAI_API_KEY` is missing, any `openai` mode **fails clearly and does not
   fall back to mock**.
-- Each generation logs model, token usage, the raw model output, a prompt
-  preview, and any parse error (under `generation` in the iteration events). A
-  candidate that fails to parse is marked invalid and the run continues.
+- **Solution generation** logs model, tokens, raw output, prompt preview, and any
+  parse error (`generation` in iteration events); an unparseable candidate is
+  marked invalid and the run continues.
+- **Strategy generation** is called only on stagnation. The model returns one
+  `Strategy` JSON, which is parsed (`parse_strategy`) and validated (`VALID`);
+  on repeated parse/validation failure it retries and then falls back to the
+  mock proposer, so a malformed strategy never crashes the run. Each proposal
+  logs model, tokens, attempts, fallback flag, errors, raw output, and prompt
+  preview (`strategy_generation` in `strategy_switch` / `strategy_switch_rejected`
+  events). Strategy switches never reset the population.
 
 ## Layout
 
@@ -86,14 +105,13 @@ J     = delta * log(1 + s_start) / sqrt(W)
 stagnant if delta <= tau   ->   propose a new strategy, validate, switch
 ```
 
-## What's real vs. mocked (V1)
+## What's real vs. mocked (V2)
 
-- **Solution generation** — real OpenAI backend available (`llm.mode: openai`,
-  default `gpt-5-mini`); a deterministic mock backend (`llm.mode: mock`, the
-  default) is used for tests and smoke runs. Same operators and decision flow
-  either way.
-- **Strategy proposal** — still mock/static: picks a different valid strategy
-  from a small catalogue. No real strategy-generation API call yet.
+- **Solution generation** — real OpenAI backend (`solution_mode: openai`,
+  default `gpt-5-mini`) or deterministic mock (`solution_mode: mock`, default).
+- **Strategy generation** — real OpenAI backend (`strategy_mode: openai`) or
+  the mock/static catalogue proposer (`strategy_mode: mock`, default). Real
+  proposals are parsed, validated, retried, and fall back to mock on failure.
 - **One task only** (`toy_blackbox`); the `Task` interface + registry are ready
   for the rest.
 

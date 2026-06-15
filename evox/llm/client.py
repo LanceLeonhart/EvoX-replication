@@ -24,9 +24,9 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.strategy import Strategy
+from ..core.strategy import Strategy, validate_strategy
 from ..logging.usage import UsageTracker
-from .parsers import parse_solution_vector
+from .parsers import parse_solution_vector, parse_strategy
 
 
 # ── request / response containers ─────────────────────────────────────────
@@ -68,6 +68,11 @@ class StrategyResponse:
     raw_text: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    model: str = "mock"
+    prompt: str = ""
+    attempts: int = 1
+    used_fallback: bool = False
+    errors: List[str] = field(default_factory=list)
 
 
 # ── abstract interface ────────────────────────────────────────────────────
@@ -224,11 +229,16 @@ def _extract_output_text(response: Any) -> str:
 
 
 class OpenAIClient(LLMClient):
-    """Real inner-loop candidate generation via the OpenAI Responses API.
+    """Real generation via the OpenAI Responses API (default ``gpt-5-mini``).
 
-    Only ``generate_solution`` (G_sol) is real. Strategy proposal stays mock /
-    static in V1 and is delegated to an internal ``MockLLMClient`` — no real
-    strategy-generation API call is made.
+    As of V2 both methods are real:
+
+      - ``generate_solution`` (G_sol) — inner-loop candidate generation; parse
+        failures mark the candidate invalid without crashing the run.
+      - ``propose_strategy`` (G_str) — outer-loop strategy generation; the model
+        returns one Strategy JSON which is parsed and validated, with configurable
+        retries and a fall back to the mock/static proposer on repeated failure,
+        so a malformed strategy never crashes the run.
 
     The OpenAI SDK is imported lazily and the API key is checked *before* the
     import, so a missing key fails with a clear message even when the SDK is not
@@ -241,6 +251,7 @@ class OpenAIClient(LLMClient):
         reasoning_effort: str = "minimal",
         verbosity: Optional[str] = "low",
         max_output_tokens: int = 512,
+        strategy_retries: int = 1,
         usage: Optional[UsageTracker] = None,
         catalog: Optional[List[Strategy]] = None,
         api_key: Optional[str] = None,
@@ -250,9 +261,10 @@ class OpenAIClient(LLMClient):
         self.reasoning_effort = reasoning_effort
         self.verbosity = verbosity
         self.max_output_tokens = int(max_output_tokens)
+        self.strategy_retries = max(0, int(strategy_retries))
         self.usage = usage or UsageTracker()
-        # strategy proposal remains mock/static in V1
-        self._strategy_backend = MockLLMClient(usage=self.usage, catalog=catalog)
+        # fallback proposer used when real strategy generation keeps failing
+        self._strategy_fallback = MockLLMClient(usage=self.usage, catalog=catalog)
 
         if client is not None:
             self._client = client
@@ -261,22 +273,22 @@ class OpenAIClient(LLMClient):
         key = api_key or os.environ.get("OPENAI_API_KEY")
         if not key:
             raise RuntimeError(
-                "OPENAI_API_KEY is not set but llm.mode='openai' was requested. "
-                "Export OPENAI_API_KEY or use llm.mode='mock'. "
+                "OPENAI_API_KEY is not set but an 'openai' llm mode was requested. "
+                "Export OPENAI_API_KEY or use mock mode. "
                 "(No silent fallback to mock.)"
             )
         try:
             from openai import OpenAI
         except ImportError as exc:  # pragma: no cover - depends on env
             raise RuntimeError(
-                "The 'openai' package is required for llm.mode='openai'. "
+                "The 'openai' package is required for openai llm modes. "
                 "Install it with: pip install 'evox-replication[openai]' "
                 "(or: pip install openai)."
             ) from exc
         self._client = OpenAI(api_key=key)
 
-    # solution generation -------------------------------------------------
-    def generate_solution(self, request: SolutionRequest, prompt: str) -> SolutionResponse:
+    # shared request builder ----------------------------------------------
+    def _build_kwargs(self, prompt: str) -> Dict[str, Any]:
         kwargs: Dict[str, Any] = {
             "model": self.model,
             "input": prompt,
@@ -286,16 +298,23 @@ class OpenAIClient(LLMClient):
             kwargs["reasoning"] = {"effort": self.reasoning_effort}
         if self.verbosity:
             kwargs["text"] = {"verbosity": self.verbosity}
+        return kwargs
 
-        # API/transport errors are intentionally NOT swallowed: a bad key or
-        # quota problem should fail loudly rather than silently producing a run
-        # of all-invalid candidates.
-        response = self._client.responses.create(**kwargs)
+    def _call(self, prompt: str):
+        """Call the Responses API and return (raw_text, prompt_tokens, completion_tokens)."""
+        response = self._client.responses.create(**self._build_kwargs(prompt))
         raw = _extract_output_text(response)
-
         usage = getattr(response, "usage", None)
         ptoks = int(getattr(usage, "input_tokens", 0) or 0)
         ctoks = int(getattr(usage, "output_tokens", 0) or 0)
+        return raw, ptoks, ctoks
+
+    # solution generation -------------------------------------------------
+    def generate_solution(self, request: SolutionRequest, prompt: str) -> SolutionResponse:
+        # API/transport errors are intentionally NOT swallowed: a bad key or
+        # quota problem should fail loudly rather than silently producing a run
+        # of all-invalid candidates.
+        raw, ptoks, ctoks = self._call(prompt)
         self.usage.record("generate_solution", prompt_tokens=ptoks, completion_tokens=ctoks)
 
         # Parse failures must NOT crash the run: mark invalid, keep the raw text
@@ -320,6 +339,71 @@ class OpenAIClient(LLMClient):
         except Exception as exc:  # parse failure -> invalid candidate
             return None, f"{type(exc).__name__}: {exc}"
 
-    # strategy proposal (still mock/static in V1) -------------------------
+    # strategy proposal (real in V2, with retry + mock fallback) ----------
     def propose_strategy(self, request: StrategyRequest, prompt: str) -> StrategyResponse:
-        return self._strategy_backend.propose_strategy(request, prompt)
+        errors: List[str] = []
+        last_raw = ""
+        ptoks_total = 0
+        ctoks_total = 0
+        max_attempts = 1 + self.strategy_retries
+
+        for attempt in range(1, max_attempts + 1):
+            # API/transport errors propagate loudly (consistent with G_sol);
+            # only malformed/invalid *content* is retried and falls back.
+            raw, ptoks, ctoks = self._call(prompt)
+            last_raw = raw
+            ptoks_total += ptoks
+            ctoks_total += ctoks
+            self.usage.record("propose_strategy", prompt_tokens=ptoks, completion_tokens=ctoks)
+
+            try:
+                strategy = parse_strategy(raw)
+            except Exception as exc:
+                errors.append(f"attempt {attempt} parse: {type(exc).__name__}: {exc}")
+                continue
+
+            ok, reasons = validate_strategy(strategy)
+            if not ok:
+                errors.append(f"attempt {attempt} invalid: {reasons}")
+                continue
+
+            return StrategyResponse(
+                strategy=strategy,
+                raw_text=raw,
+                prompt_tokens=ptoks_total,
+                completion_tokens=ctoks_total,
+                model=self.model,
+                attempts=attempt,
+                used_fallback=False,
+                errors=errors,
+            )
+
+        # all attempts failed -> fall back to mock/static proposal (always valid)
+        fb = self._strategy_fallback.propose_strategy(request, prompt)
+        return StrategyResponse(
+            strategy=fb.strategy,
+            raw_text=last_raw,
+            prompt_tokens=ptoks_total,
+            completion_tokens=ctoks_total,
+            model=self.model,
+            attempts=max_attempts,
+            used_fallback=True,
+            errors=errors,
+        )
+
+
+# ── composite client: independent solution / strategy backends ─────────────
+class CompositeLLMClient(LLMClient):
+    """Routes ``generate_solution`` and ``propose_strategy`` to (possibly
+    different) backends, so solution and strategy generation modes can be chosen
+    independently (mock/mock, openai/mock, openai/openai)."""
+
+    def __init__(self, solution_client: LLMClient, strategy_client: LLMClient) -> None:
+        self.solution_client = solution_client
+        self.strategy_client = strategy_client
+
+    def generate_solution(self, request: SolutionRequest, prompt: str) -> SolutionResponse:
+        return self.solution_client.generate_solution(request, prompt)
+
+    def propose_strategy(self, request: StrategyRequest, prompt: str) -> StrategyResponse:
+        return self.strategy_client.propose_strategy(request, prompt)

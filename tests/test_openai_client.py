@@ -123,24 +123,6 @@ def test_runner_openai_mode_missing_key_raises_no_silent_fallback(monkeypatch, t
     assert "OPENAI_API_KEY" in str(exc.value)
 
 
-def test_openai_strategy_proposal_is_still_mock(monkeypatch):
-    # OpenAIClient must NOT make a real strategy-generation call in V1.
-    fake = _FakeOpenAI([])
-    client = OpenAIClient(client=fake)
-    from evox.llm.client import StrategyRequest
-
-    req = StrategyRequest(
-        current_strategy=_strategy(),
-        descriptor={},
-        tried_signatures=[],
-        seed=3,
-    )
-    resp = client.propose_strategy(req, "PROMPT")
-    assert resp.strategy.id  # returned a catalogued strategy
-    # the (solution) Responses API was never touched for strategy proposal
-    assert fake.responses.calls == []
-
-
 def test_engine_runs_end_to_end_with_fake_openai():
     # A run with valid generations completes and logs generation metadata.
     fake = _FakeOpenAI(["[0.1, 0.1, 0.1, 0.1, 0.1]"] * 50)

@@ -31,7 +31,8 @@ strategy:
   notes: Tight exploitation around the incumbent best.
 
 llm:
-  mode: openai
+  solution_mode: openai       # real inner-loop generation
+  strategy_mode: mock         # strategy proposal stays mock/static here
   model: gpt-5-mini
   reasoning_effort: minimal   # low-cost default
   verbosity: low              # concise output
